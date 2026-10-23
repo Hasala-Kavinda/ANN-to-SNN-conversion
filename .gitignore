@@ -17,5 +17,6 @@ runs/
 *.log
 .DS_Store
 *.ipynb_checkpoints
-docs
+docs/
 README.md
+.vscode
