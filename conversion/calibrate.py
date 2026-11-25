@@ -95,8 +95,8 @@ def calibrate(
                 obs, dtype=torch.float32, device=device
             ).unsqueeze(0)
             with torch.no_grad():
-                ann(obs_t)   # hooks collect activations as side-effect
-            action       = int(ann(obs_t).argmax(dim=1).item())
+                q_values = ann(obs_t)   # hooks collect activations as side-effect
+            action       = int(q_values.argmax(dim=1).item())
             obs, _, done = env.step(action)
             frames      += 1
 

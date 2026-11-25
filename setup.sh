@@ -26,7 +26,7 @@ echo "==> Installing SNN and training utilities..."
 pip install "snntorch>=0.9" tensorboard imageio imageio-ffmpeg tqdm
 
 echo "==> Installing analysis and testing utilities..."
-pip install pytest
+pip install matplotlib pytest
 
 echo "==> Freezing requirements..."
 pip freeze > requirements.txt

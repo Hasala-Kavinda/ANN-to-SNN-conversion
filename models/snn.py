@@ -156,7 +156,6 @@ class SNNFromDQN(nn.Module):
         # Initialise membrane states (lazy, allocated on first use)
         mem_conv: list[Optional[torch.Tensor]] = [None] * self._n_if_conv
         mem_fc:   list[Optional[torch.Tensor]] = [None] * self._n_if_fc
-        mem_out:  Optional[torch.Tensor]       = None
 
         acc_out = torch.zeros(
             B, self.fc_layers[-1].out_features, device=device
@@ -188,10 +187,7 @@ class SNNFromDQN(nn.Module):
 
             # ── Output layer — integrate membrane, no spike ──────────────────
             h = self.fc_layers[-1](h)
-            if mem_out is None:
-                mem_out = torch.zeros_like(h)
-            mem_out  = mem_out + h
-            acc_out  = acc_out + mem_out
+            acc_out = acc_out + h
 
         return acc_out / T
 

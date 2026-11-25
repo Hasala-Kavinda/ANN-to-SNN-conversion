@@ -128,7 +128,7 @@ class MnistSNN(nn.Module):
         return acc / T
 
 
-# ── Calibration + conversion ──────────────────────────────────────────────────
+# Calibration + conversion
 
 def calibrate_and_convert(
     ann:         MnistCNN,
@@ -184,37 +184,41 @@ def calibrate_and_convert(
     # Input scale = 1.0 (image pixels already in [0,1])
     scales = [1.0] + thresholds  # scales[i] is the "pre-layer" threshold
 
-    # Conv layers with weight scaling
+    # Conv layers with weight/bias scaling (unit IF thresholds = 1.0)
     src_convs = [ann.conv[0], ann.conv[3]]
     for i, src in enumerate(src_convs):
         new_conv = nn.Conv2d(
             src.in_channels, src.out_channels,
             src.kernel_size, src.stride, src.padding, bias=True
         )
-        scale = scales[i] / thresholds[i]
+        w_scale = scales[i] / thresholds[i]
+        b_scale = 1.0 / thresholds[i]
         with torch.no_grad():
-            new_conv.weight.copy_(src.weight * scale)
+            new_conv.weight.copy_(src.weight * w_scale)
             if src.bias is not None:
-                new_conv.bias.copy_(src.bias * scale)
+                new_conv.bias.copy_(src.bias * b_scale)
         conv_layers.append(new_conv)
         pool_layers.append(nn.AvgPool2d(2))
 
     # FC layers
     src_fcs = [ann.fc[0], ann.fc[2]]
-    fc_scales = [
+    fc_w_scales = [
         scales[2] / thresholds[2],  # hidden fc
-        1.0 / thresholds[2],         # output fc (read membrane, no thresh)
+        thresholds[2],              # output fc (no IF neuron: undo λ_fc1 scaling)
+    ]
+    fc_b_scales = [
+        1.0 / thresholds[2],        # hidden fc bias
+        1.0,                        # output fc bias (unscaled)
     ]
     for i, src in enumerate(src_fcs):
         new_fc = nn.Linear(src.in_features, src.out_features, bias=True)
-        scale  = fc_scales[i]
         with torch.no_grad():
-            new_fc.weight.copy_(src.weight * scale)
+            new_fc.weight.copy_(src.weight * fc_w_scales[i])
             if src.bias is not None:
-                new_fc.bias.copy_(src.bias * scale)
+                new_fc.bias.copy_(src.bias * fc_b_scales[i])
         fc_layers.append(new_fc)
 
-    return MnistSNN(conv_layers, pool_layers, fc_layers, thresholds)
+    return MnistSNN(conv_layers, pool_layers, fc_layers, [1.0] * len(thresholds))
 
 
 # ── Evaluation helpers ────────────────────────────────────────────────────────

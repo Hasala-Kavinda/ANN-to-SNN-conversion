@@ -3,7 +3,7 @@ VizDoom environment wrapper for the 'basic' scenario.
 
 The 'basic' scenario:
   - A monster appears at a random horizontal position.
-  - The agent must turn left/right to aim and then shoot.
+  - The agent must turn left or right to aim and then shoot.
   - Actions: MOVE_LEFT, MOVE_RIGHT, ATTACK  (3 discrete actions)
   - Rewards: +101 for a kill, -5 for a missed shot, -1 per step.
 
@@ -101,7 +101,7 @@ class DoomEnv:
         self._episode_steps  = 0
         self._episode_reward = 0.0
 
-    # ── Public API ───────────────────────────────────────────────────────────
+    # Public API
 
     def reset(self) -> np.ndarray:
         """Start a new episode. Returns the initial stacked observation."""

@@ -91,3 +91,45 @@ def test_replay_buffer():
     assert r.shape  == (4, 1)
     assert ns.shape == (4, 4, 84, 84)
     assert d.shape  == (4, 1)
+
+
+def test_snn_conversion_fidelity_and_spike_stats():
+    """Converted SNN Q-values converge toward ANN Q-values and spike stats stay in [0, 1]."""
+    from models.ann import DQN
+    from conversion.convert import build_snn_from_ann
+    from analysis.spike_stats import collect_spike_stats
+    from configs.config import FRAME_STACK
+
+    torch.manual_seed(0)
+    ann = DQN().eval()
+    x = torch.rand(2, FRAME_STACK, 84, 84)
+
+    # Collect per-ReLU max activations on x for exact calibration
+    thresholds = []
+    hooks = []
+    for m in ann.modules():
+        if isinstance(m, torch.nn.ReLU):
+            hooks.append(
+                m.register_forward_hook(
+                    lambda _mod, _inp, out: thresholds.append(max(float(out.max().item()), 1e-6))
+                )
+            )
+    with torch.no_grad():
+        q_ann = ann(x)
+    for h in hooks:
+        h.remove()
+
+    snn = build_snn_from_ann(ann, thresholds).eval()
+    with torch.no_grad():
+        q_snn = snn(x, T=256)
+
+    # Converted SNN should approximate ANN Q-values closely at T=256
+    assert torch.allclose(q_snn, q_ann, atol=0.05), f"ANN={q_ann}, SNN={q_snn}"
+
+    # Spike stats firing rates and sparsity must be valid probabilities in [0, 1]
+    stats = collect_spike_stats(snn, x[:1], T=32)
+    for name, s in stats.items():
+        if name.startswith("_"):
+            continue
+        assert 0.0 <= s["firing_rate"] <= 1.0, f"{name} bad rate: {s['firing_rate']}"
+        assert 0.0 <= s["sparsity"] <= 1.0, f"{name} bad sparsity: {s['sparsity']}"

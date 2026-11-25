@@ -20,3 +20,7 @@ runs/
 docs/
 README.md
 .vscode
+research/
+_vizdoom.ini
+_vizdoom
+.pytest_cache/

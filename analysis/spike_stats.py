@@ -56,11 +56,12 @@ def collect_spike_stats(
     # ── replicate SNNFromDQN.forward with instrumentation ─────────────────────
     mem_conv = [None] * snn._n_if_conv
     mem_fc   = [None] * snn._n_if_fc
-    mem_out  = None
     acc_out  = torch.zeros(B, snn.fc_layers[-1].out_features, device=device)
 
-    spike_counts_conv = [torch.zeros(1, device=device)] * snn._n_if_conv
-    spike_counts_fc   = [torch.zeros(1, device=device)] * snn._n_if_fc
+    spike_counts_conv = [torch.zeros(1, device=device) for _ in range(snn._n_if_conv)]
+    spike_counts_fc   = [torch.zeros(1, device=device) for _ in range(snn._n_if_fc)]
+    layer_sizes_conv  = [0] * snn._n_if_conv
+    layer_sizes_fc    = [0] * snn._n_if_fc
 
     for _ in range(T):
         h = obs
@@ -68,6 +69,7 @@ def collect_spike_stats(
             h = conv(h)
             if mem_conv[i] is None:
                 mem_conv[i] = torch.zeros_like(h)
+                layer_sizes_conv[i] = h.numel() // B
             h, mem_conv[i] = neuron(h, mem_conv[i])
             spike_counts_conv[i] = spike_counts_conv[i] + h.sum()
 
@@ -76,14 +78,12 @@ def collect_spike_stats(
             h = fc(h)
             if mem_fc[i] is None:
                 mem_fc[i] = torch.zeros_like(h)
+                layer_sizes_fc[i] = h.numel() // B
             h, mem_fc[i] = neuron(h, mem_fc[i])
             spike_counts_fc[i] = spike_counts_fc[i] + h.sum()
 
         h = snn.fc_layers[-1](h)
-        if mem_out is None:
-            mem_out = torch.zeros_like(h)
-        mem_out = mem_out + h
-        acc_out = acc_out + mem_out
+        acc_out = acc_out + h
 
     # ── Compute per-layer stats ───────────────────────────────────────────────
     layer_names = (
@@ -91,10 +91,7 @@ def collect_spike_stats(
         + [f"fc_{i}"   for i in range(snn._n_if_fc)]
     )
     spike_counts = spike_counts_conv + spike_counts_fc
-    layer_sizes  = (
-        [conv.out_channels for conv in snn.conv_layers]
-        + [fc.out_features for fc in snn.fc_layers[:-1]]
-    )
+    layer_sizes  = layer_sizes_conv + layer_sizes_fc
 
     total_spikes = 0
     for name, count, size in zip(layer_names, spike_counts, layer_sizes):
@@ -126,7 +123,7 @@ def analyse_episodes(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Loading SNN from: {snn_path}")
-    snn: SNNFromDQN = torch.load(snn_path, map_location=device)
+    snn: SNNFromDQN = torch.load(snn_path, map_location=device, weights_only=False)
     snn.eval()
 
     env   = DoomEnv()

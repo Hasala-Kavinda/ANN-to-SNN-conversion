@@ -36,6 +36,7 @@ from configs.config import (
     LR,
     N_ACTIONS,
     REPLAY_SIZE,
+    REWARD_SCALE,
     TARGET_UPDATE,
     WARMUP_STEPS,
 )
@@ -137,11 +138,11 @@ class DQNAgent:
         # Q(s, a) from online network
         current_q = self.online_net(s).gather(1, a.unsqueeze(1))
 
-        # Double DQN target
+        # Double DQN target (rewards scaled for Huber loss stability)
         with torch.no_grad():
             next_actions = self.online_net(ns).argmax(1, keepdim=True)
             next_q  = self.target_net(ns).gather(1, next_actions)
-            target_q = r + GAMMA * next_q * (1.0 - d)
+            target_q = (r * REWARD_SCALE) + GAMMA * next_q * (1.0 - d)
 
         loss = F.smooth_l1_loss(current_q, target_q)
 

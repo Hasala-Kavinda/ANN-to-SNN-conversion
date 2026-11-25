@@ -1,6 +1,6 @@
 """
 Unit tests for DoomEnv.
-Run with:  pytest tests/test_env.py -v
+Run with  pytest tests/test_env.py -v
 """
 
 import numpy as np

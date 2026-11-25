@@ -128,8 +128,8 @@ def main() -> None:
     if args.resume:
         agent.load(args.resume)
 
-    max_steps   = args.max_steps
-    best_reward = -float("inf")
+    max_steps        = args.max_steps
+    best_eval_reward = -float("inf")
 
     obs  = env.reset()
     done = False
@@ -156,7 +156,7 @@ def main() -> None:
             pbar.set_postfix(
                 ep    = ep_count,
                 R     = f"{ep_reward:.0f}",
-                best  = f"{best_reward:.0f}",
+                eval  = f"{best_eval_reward:.0f}" if best_eval_reward > -float("inf") else "n/a",
                 eps   = f"{eps:.3f}",
                 loss  = f"{np.mean(loss_buf):.4f}" if loss_buf else "n/a",
             )
@@ -167,11 +167,6 @@ def main() -> None:
                 writer.add_scalar("train/episode_steps",  env.episode_steps, agent.steps_done)
                 if loss_buf:
                     writer.add_scalar("train/loss", float(np.mean(loss_buf)), agent.steps_done)
-
-            # Save new best checkpoint
-            if ep_reward > best_reward:
-                best_reward = ep_reward
-                agent.save(os.path.join(CHECKPOINT_DIR, "best.pt"))
 
             ep_reward = 0.0
             loss_buf  = []
@@ -205,11 +200,16 @@ def main() -> None:
             and agent.steps_done >= WARMUP_STEPS
         ):
             stats = evaluate_greedy(agent)
+            is_best = stats["mean_reward"] > best_eval_reward
+            if is_best:
+                best_eval_reward = stats["mean_reward"]
+                agent.save(os.path.join(CHECKPOINT_DIR, "best.pt"))
             print(
                 f"\n[Eval @ step {agent.steps_done:,}]  "
                 f"mean_reward={stats['mean_reward']:.1f} "
                 f"± {stats['std_reward']:.1f}  "
                 f"mean_steps={stats['mean_steps']:.0f}"
+                + ("  ★ new best" if is_best else "")
             )
             if writer:
                 for k, v in stats.items():
@@ -218,13 +218,25 @@ def main() -> None:
     pbar.close()
     env.close()
 
+    # Final greedy evaluation (ensures best.pt is always created even for short runs)
+    final_stats = evaluate_greedy(agent)
+    if final_stats["mean_reward"] > best_eval_reward:
+        best_eval_reward = final_stats["mean_reward"]
+        agent.save(os.path.join(CHECKPOINT_DIR, "best.pt"))
+    print(
+        f"\n[Final Eval @ step {agent.steps_done:,}]  "
+        f"mean_reward={final_stats['mean_reward']:.1f} "
+        f"± {final_stats['std_reward']:.1f}  "
+        f"mean_steps={final_stats['mean_steps']:.0f}"
+    )
+
     # Final save
     final_path = os.path.join(CHECKPOINT_DIR, "final.pt")
     agent.save(final_path)
     print(f"\nTraining complete.")
-    print(f"  Total steps  : {agent.steps_done:,}")
-    print(f"  Best reward  : {best_reward:.1f}")
-    print(f"  Checkpoints  : {CHECKPOINT_DIR}/")
+    print(f"  Total steps      : {agent.steps_done:,}")
+    print(f"  Best eval reward : {best_eval_reward:.1f}")
+    print(f"  Checkpoints      : {CHECKPOINT_DIR}/")
 
     if writer:
         writer.close()

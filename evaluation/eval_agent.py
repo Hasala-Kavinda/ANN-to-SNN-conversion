@@ -108,7 +108,7 @@ class SNNAgent:
         from models.snn import SNNFromDQN
         self.device = device
         self.T      = T
-        self.net    = torch.load(checkpoint, map_location=device)
+        self.net    = torch.load(checkpoint, map_location=device, weights_only=False)
         self.net.eval()
 
     def act(self, obs: np.ndarray, T: int | None = None, **_) -> int:

@@ -69,21 +69,21 @@ from models.snn import SNNFromDQN
 
 def scale_layer(
     src: nn.Module,
-    scale: float,
-    new_cls=None,
-    **kwargs,
+    weight_scale: float,
+    bias_scale: float | None = None,
 ) -> nn.Module:
     """
-    Create a new layer of the same type as src with weights scaled by `scale`.
+    Create a copy of src with weights scaled by `weight_scale` and
+    biases scaled by `bias_scale` (defaults to `weight_scale`).
     """
-    if new_cls is None:
-        new_cls = type(src)
+    if bias_scale is None:
+        bias_scale = weight_scale
 
     dst = copy.deepcopy(src)
     with torch.no_grad():
-        dst.weight.mul_(scale)
+        dst.weight.mul_(weight_scale)
         if dst.bias is not None:
-            dst.bias.mul_(scale)
+            dst.bias.mul_(bias_scale)
     return dst
 
 
@@ -119,24 +119,33 @@ def build_snn_from_ann(
     pre_scales  = [1.0] + thresholds[:3]   # input → conv1 → conv2 → conv3
     post_scales = thresholds               # conv1, conv2, conv3, fc1
 
+    # Weight scaling: W_snn[i] = W_ann[i] * (λ_{i-1} / λ_i), b_snn[i] = b_ann[i] / λ_i
+    # With weights & biases normalized by λ_i, every IFNeuron uses unit threshold 1.0.
     scaled_convs = []
     for i, conv in enumerate(ann_convs):
-        scale = pre_scales[i] / post_scales[i]
-        scaled_convs.append(scale_layer(conv, scale))
+        w_scale = pre_scales[i] / post_scales[i]
+        b_scale = 1.0 / post_scales[i]
+        scaled_convs.append(scale_layer(conv, weight_scale=w_scale, bias_scale=b_scale))
 
     # Hidden FC: pre-scale = λ_conv3, post-scale = λ_fc1
-    fc_hidden_scale = thresholds[2] / thresholds[3]
-    scaled_fc_hidden = scale_layer(ann_fcs[0], fc_hidden_scale)
+    scaled_fc_hidden = scale_layer(
+        ann_fcs[0],
+        weight_scale=thresholds[2] / thresholds[3],
+        bias_scale=1.0 / thresholds[3],
+    )
 
-    # Output FC: no IF neuron, so scale by 1.0 / λ_fc1 to normalise
-    # the membrane accumulation back to ANN Q-value magnitude
-    output_scale = 1.0 / thresholds[3]
-    scaled_fc_out = scale_layer(ann_fcs[1], output_scale)
+    # Output FC: no IF neuron; incoming spikes represent a_fc1 / λ_fc1,
+    # so scale weights by λ_fc1 and keep bias unscaled to recover exact Q-values.
+    scaled_fc_out = scale_layer(
+        ann_fcs[1],
+        weight_scale=thresholds[3],
+        bias_scale=1.0,
+    )
 
     snn = SNNFromDQN(
         conv_layers=scaled_convs,
         fc_layers=[scaled_fc_hidden, scaled_fc_out],
-        thresholds=thresholds,
+        thresholds=[1.0] * len(thresholds),
     )
     return snn
 
@@ -182,7 +191,7 @@ def verify_action_agreement(
                 snn_action = int(snn(obs_t, T=T).argmax(dim=1).item())
             agree += int(ann_action == snn_action)
             total += 1
-            _, _, done = env.step(ann_action)   # follow ANN policy
+            obs, _, done = env.step(ann_action)   # follow ANN policy
 
     env.close()
     agreement = agree / max(total, 1)
