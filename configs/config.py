@@ -32,14 +32,14 @@ REWARD_SCALE   = 0.01            # Scale rewards inside DQN TD target for Huber 
 SEED           = 42
 
 # Local dev overrides (RTX 3050, 4 GB VRAM)
-# Comment out this block before pushing to the server
-FRAME_STACK  = 1
-BATCH_SIZE   = 32
-REPLAY_SIZE  = 50_000
-WARMUP_STEPS = 2_000
-EPS_DECAY    = 15_000
-MAX_STEPS    = 30_000
-EVAL_EVERY   = 5_000
+# Uncomment this block when running local smoke tests
+# FRAME_STACK  = 1
+# BATCH_SIZE   = 32
+# REPLAY_SIZE  = 50_000
+# WARMUP_STEPS = 2_000
+# EPS_DECAY    = 15_000
+# MAX_STEPS    = 30_000
+# EVAL_EVERY   = 5_000
 
 # hSNN Conversion
 CALIBRATION_EPISODES = 500       # Episodes of gameplay used to collect activations

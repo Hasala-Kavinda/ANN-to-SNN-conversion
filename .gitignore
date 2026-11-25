@@ -22,5 +22,8 @@ README.md
 .vscode
 research/
 _vizdoom.ini
+_vizdoom/
+results_*.png
+_vizdoom.ini
 _vizdoom
 .pytest_cache/
