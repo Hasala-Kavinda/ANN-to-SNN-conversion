@@ -20,7 +20,7 @@ echo "==> Installing PyTorch (CUDA 12.4 wheels — compatible with CUDA 12.x and
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
 echo "==> Installing VizDoom and core packages..."
-pip install "vizdoom>=1.2.4"
+pip install "vizdoom>=1.2.4" opencv-python-headless
 
 echo "==> Installing SNN and training utilities..."
 pip install "snntorch>=0.9" tensorboard imageio imageio-ffmpeg tqdm
