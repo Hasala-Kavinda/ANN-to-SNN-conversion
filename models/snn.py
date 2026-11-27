@@ -177,14 +177,16 @@ class SNNFromDQN(nn.Module):
             B, self.fc_layers[-1].out_features, device=device
         )
 
+        cur0 = self.conv_layers[0](x)   # constant-current input: compute conv1 once
         for _ in range(T):
-            h = x   # constant-current: same frame injected every tick
+            h = cur0
 
             # ── Conv stack ───────────────────────────────────────────────────
             for i, (conv, neuron) in enumerate(
                 zip(self.conv_layers, self.if_conv)
             ):
-                h = conv(h)
+                if i > 0:
+                    h = conv(h)
                 if mem_conv[i] is None:
                     mem_conv[i] = self._init_mem(h, neuron.threshold, ratio)
                 h, mem_conv[i] = neuron(h, mem_conv[i])
@@ -236,10 +238,12 @@ class SNNFromDQN(nn.Module):
         layer_sizes_conv  = [0] * self._n_if_conv
         layer_sizes_fc    = [0] * self._n_if_fc
 
+        cur0 = self.conv_layers[0](x)
         for _ in range(T):
-            h = x
+            h = cur0
             for i, (conv, neuron) in enumerate(zip(self.conv_layers, self.if_conv)):
-                h = conv(h)
+                if i > 0:
+                    h = conv(h)
                 if mem_conv[i] is None:
                     mem_conv[i] = self._init_mem(h, neuron.threshold, ratio)
                     layer_sizes_conv[i] = h.numel() // B

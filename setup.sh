@@ -28,9 +28,6 @@ pip install "snntorch>=0.9" tensorboard imageio imageio-ffmpeg tqdm
 echo "==> Installing analysis and testing utilities..."
 pip install matplotlib pytest
 
-echo "==> Freezing requirements..."
-pip freeze > requirements.txt
-
 echo ""
 echo "✓ Setup complete!"
 echo "  Activate the environment with:  source venv/bin/activate"

@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from configs.config import (
+    ACTIVE_PROFILE,
     CHECKPOINT_DIR,
     EVAL_EPISODES,
     EVAL_EVERY,
@@ -104,8 +105,9 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # Device
+    # Device & profile
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Profile: {ACTIVE_PROFILE}  |  Checkpoints: {CHECKPOINT_DIR}/")
     print(f"Device : {device}")
     if device.type == "cuda":
         props = torch.cuda.get_device_properties(0)

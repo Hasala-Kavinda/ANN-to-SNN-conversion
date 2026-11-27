@@ -42,6 +42,7 @@ from evaluation.eval_agent import (
     RandomAgent,
     ScriptedAgent,
     SNNAgent,
+    compare_paired,
     run_evaluation,
 )
 
@@ -67,19 +68,34 @@ def plot_reward_vs_T(
     snn_stds: list[float],
     out_path: str = "results/results_reward_vs_T.png",
     scripted_reward: float | None = None,
+    snn_ci_lo: list[float] | None = None,
+    snn_ci_hi: list[float] | None = None,
+    ann_ci: tuple[float, float] | None = None,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7, 4.2))
+
+    if snn_ci_lo is not None and snn_ci_hi is not None:
+        yerr = [
+            [max(0.0, r - lo) for r, lo in zip(snn_rewards, snn_ci_lo)],
+            [max(0.0, hi - r) for r, hi in zip(snn_rewards, snn_ci_hi)],
+        ]
+        err_label = "SNN (95% CI)"
+    else:
+        yerr = snn_stds
+        err_label = "SNN (±std)"
 
     ax.errorbar(
         T_list,
         snn_rewards,
-        yerr=snn_stds,
+        yerr=yerr,
         marker="o",
-        label="SNN",
+        label=err_label,
         color="#e07b39",
         capsize=4,
     )
     ax.axhline(ann_reward, ls="--", color="#4c72b0", label=f"ANN ({ann_reward:.1f})")
+    if ann_ci is not None:
+        ax.axhspan(ann_ci[0], ann_ci[1], color="#4c72b0", alpha=0.12)
     if scripted_reward is not None:
         ax.axhline(scripted_reward, ls="-.", color="#8172b3", label=f"Scripted ({scripted_reward:.1f})")
     ax.axhline(
@@ -214,14 +230,20 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--ann-checkpoint", type=str, default="checkpoints/best.pt")
     p.add_argument("--snn-checkpoint", type=str, default="checkpoints/best_snn.pt")
+    p.add_argument("--config",         type=str, default=None,
+                   help="Optional chosen_config.json (sets default spike-T)")
     p.add_argument("--T-values",       type=int, nargs="+", default=T_VALUES)
     p.add_argument("--episodes",       type=int, default=50)
     p.add_argument("--agreement-eps",  type=int, default=20)
     p.add_argument("--spike-T",        type=int, default=None,
-                   help="Override T for spike-rate plot (default: smallest T >= 95%% ANN reward)")
+                   help="Override T for spike-rate plot (default: from --config or smallest T >= 95%% ANN reward)")
     p.add_argument("--out-dir",        type=str, default="results")
     p.add_argument("--seed",           type=int, default=0)
     return p.parse_args()
+
+
+def _compact_stats(s: dict) -> dict:
+    return {k: v for k, v in s.items() if k != "rewards"}
 
 
 def main() -> None:
@@ -229,34 +251,45 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print("Evaluating baselines …")
-    random_stats   = run_evaluation(RandomAgent(),   n_episodes=args.episodes, seed=args.seed, verbose=False)
-    scripted_stats = run_evaluation(ScriptedAgent(), n_episodes=args.episodes, seed=args.seed, verbose=False)
+    config_T = None
+    if args.config and os.path.exists(args.config):
+        with open(args.config) as f:
+            config_T = int(json.load(f).get("T", 0)) or None
+
+    print(f"Evaluating baselines ({args.episodes} paired episodes) …")
+    random_stats   = run_evaluation(RandomAgent(),   n_episodes=args.episodes, seed=args.seed, verbose=False, paired=True)
+    scripted_stats = run_evaluation(ScriptedAgent(), n_episodes=args.episodes, seed=args.seed, verbose=False, paired=True)
     ann_agent      = ANNAgent(args.ann_checkpoint, device)
-    ann_stats      = run_evaluation(ann_agent,       n_episodes=args.episodes, seed=args.seed, verbose=False)
+    ann_stats      = run_evaluation(ann_agent,       n_episodes=args.episodes, seed=args.seed, verbose=False, paired=True)
 
-    print(f"  Random   : {random_stats['mean_reward']:.1f}  (kill={random_stats['kill_rate']*100:.1f}%)")
-    print(f"  Scripted : {scripted_stats['mean_reward']:.1f}  (kill={scripted_stats['kill_rate']*100:.1f}%)")
-    print(f"  ANN      : {ann_stats['mean_reward']:.1f}  (kill={ann_stats['kill_rate']*100:.1f}%)")
+    print(f"  Random   : {random_stats['mean_reward']:.1f} [{random_stats['reward_ci_lo']:.1f}, {random_stats['reward_ci_hi']:.1f}]  (kill={random_stats['kill_rate']*100:.1f}%)")
+    print(f"  Scripted : {scripted_stats['mean_reward']:.1f} [{scripted_stats['reward_ci_lo']:.1f}, {scripted_stats['reward_ci_hi']:.1f}]  (kill={scripted_stats['kill_rate']*100:.1f}%)")
+    print(f"  ANN      : {ann_stats['mean_reward']:.1f} [{ann_stats['reward_ci_lo']:.1f}, {ann_stats['reward_ci_hi']:.1f}]  (kill={ann_stats['kill_rate']*100:.1f}%)")
 
-    print("\nEvaluating SNN at each T …")
-    snn_rewards, snn_stds, agreements, snn_kill_rates = [], [], [], []
+    print("\nEvaluating SNN at each T (paired with ANN) …")
+    snn_rewards, snn_stds, snn_ci_los, snn_ci_his = [], [], [], []
+    agreements, snn_kill_rates, paired_diffs = [], [], []
     snn_agent = SNNAgent(args.snn_checkpoint, device, T=args.T_values[0])
 
     for T in args.T_values:
-        stats = run_evaluation(snn_agent, n_episodes=args.episodes, seed=args.seed, T=T, verbose=False)
+        stats = run_evaluation(snn_agent, n_episodes=args.episodes, seed=args.seed, T=T, verbose=False, paired=True)
+        paired = compare_paired(ann_stats, stats)
         agreement = measure_agreement(
             ann_agent, args.snn_checkpoint, T=T, device=device,
             n_episodes=args.agreement_eps, seed=args.seed,
         )
         print(
-            f"  T={T:4d}  reward={stats['mean_reward']:7.1f} ± {stats['std_reward']:.1f}  "
-            f"kill={stats['kill_rate']*100:5.1f}%  agreement={agreement * 100:.1f}%"
+            f"  T={T:4d}  reward={stats['mean_reward']:7.1f} [{stats['reward_ci_lo']:.1f},{stats['reward_ci_hi']:.1f}]  "
+            f"diff={paired['mean_diff']:+5.1f} [{paired['ci_lo']:+.1f},{paired['ci_hi']:+.1f}]  "
+            f"kill={stats['kill_rate']*100:5.1f}%  agree={agreement * 100:.1f}%"
         )
         snn_rewards.append(stats["mean_reward"])
         snn_stds.append(stats["std_reward"])
+        snn_ci_los.append(stats["reward_ci_lo"])
+        snn_ci_his.append(stats["reward_ci_hi"])
         snn_kill_rates.append(stats["kill_rate"])
         agreements.append(agreement)
+        paired_diffs.append(paired)
 
     # ── Chart 1: Reward vs T ──────────────────────────────────────────────────
     plot_reward_vs_T(
@@ -266,6 +299,9 @@ def main() -> None:
         T_list=args.T_values,
         snn_rewards=snn_rewards,
         snn_stds=snn_stds,
+        snn_ci_lo=snn_ci_los,
+        snn_ci_hi=snn_ci_his,
+        ann_ci=(ann_stats["reward_ci_lo"], ann_stats["reward_ci_hi"]),
         out_path=os.path.join(args.out_dir, "results_reward_vs_T.png"),
     )
 
@@ -277,11 +313,13 @@ def main() -> None:
     )
 
     # ── Chart 3: Spike Rates per Layer ────────────────────────────────────────
-    selected_T = (
-        args.spike_T
-        if args.spike_T is not None
-        else select_operating_T(args.T_values, snn_rewards, ann_stats["mean_reward"])
-    )
+    if args.spike_T is not None:
+        selected_T = args.spike_T
+    elif config_T is not None and config_T in args.T_values:
+        selected_T = config_T
+    else:
+        selected_T = select_operating_T(args.T_values, snn_rewards, ann_stats["mean_reward"])
+
     print(f"\nCollecting spike stats at selected T={selected_T} …")
     from analysis.spike_stats import analyse_episodes
 
@@ -303,24 +341,37 @@ def main() -> None:
     )
 
     # ── Summary JSON ──────────────────────────────────────────────────────────
+    paired_selected = next(
+        (p for t, p in zip(args.T_values, paired_diffs) if t == selected_T),
+        None,
+    )
     summary = {
+        "n_episodes": args.episodes,
+        "paired":     True,
         "baselines": {
-            "random":   random_stats,
-            "scripted": scripted_stats,
-            "ann":      ann_stats,
+            "random":   _compact_stats(random_stats),
+            "scripted": _compact_stats(scripted_stats),
+            "ann":      _compact_stats(ann_stats),
         },
         "t_sweep": [
             {
-                "T":            T,
-                "mean_reward":  r,
-                "std_reward":   s,
-                "kill_rate":    kr,
-                "agreement":    ag,
+                "T":             T,
+                "mean_reward":   r,
+                "std_reward":    s,
+                "reward_ci_lo":  lo,
+                "reward_ci_hi":  hi,
+                "kill_rate":     kr,
+                "agreement":     ag,
+                "paired_vs_ann": p,
             }
-            for T, r, s, kr, ag in zip(args.T_values, snn_rewards, snn_stds, snn_kill_rates, agreements)
+            for T, r, s, lo, hi, kr, ag, p in zip(
+                args.T_values, snn_rewards, snn_stds, snn_ci_los, snn_ci_his,
+                snn_kill_rates, agreements, paired_diffs,
+            )
         ],
-        "selected_T":    selected_T,
-        "spike_summary": spike_summary,
+        "selected_T":      selected_T,
+        "paired_selected": paired_selected,
+        "spike_summary":   spike_summary,
     }
     summary_path = os.path.join(args.out_dir, "results_summary.json")
     with open(summary_path, "w") as f:

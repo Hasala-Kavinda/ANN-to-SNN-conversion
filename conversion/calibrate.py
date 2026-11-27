@@ -42,9 +42,13 @@ def calibrate(
     device:                torch.device | None = None,
     max_samples_per_layer: int   = 2_000_000,
     seed:                  int   = 42,
+    save_frames:           int   = 4000,
+    frames_out:            str   = "calibration_frames.npz",
+    eps_random:            float = 0.20,
 ) -> dict[str, np.ndarray]:
     """
-    Run the DQN greedily for n_episodes and collect per-layer activations.
+    Run the DQN for n_episodes (80% greedy, 20% random-action by default for
+    state diversity) and collect per-layer activations + offline eval frames.
 
     Uses bounded per-frame subsampling when `max_samples_per_layer > 0` so
     peak RAM stays under ~100 MB even for 500+ episodes.
@@ -108,8 +112,9 @@ def calibrate(
           f"{list(activation_store.keys())}")
 
     # ── Run episodes ──────────────────────────────────────────────────────────
-    env    = DoomEnv(frame_stack=in_channels)
+    env    = DoomEnv(frame_stack=in_channels, seed=seed)
     frames = 0
+    saved_frames: list[np.ndarray] = []
 
     for ep in range(n_episodes):
         obs  = env.reset()
@@ -120,7 +125,16 @@ def calibrate(
             ).unsqueeze(0)
             with torch.no_grad():
                 q_values = ann(obs_t)   # hooks collect activations as side-effect
-            action       = int(q_values.argmax(dim=1).item())
+            if save_frames > 0 and (len(saved_frames) < save_frames or rng.random() < 0.25):
+                u8 = np.rint(np.clip(obs, 0.0, 1.0) * 255.0).astype(np.uint8)
+                if len(saved_frames) < save_frames:
+                    saved_frames.append(u8)
+                else:
+                    saved_frames[int(rng.integers(0, save_frames))] = u8
+            if rng.random() < eps_random:
+                action = int(rng.integers(0, env.n_actions))
+            else:
+                action = int(q_values.argmax(dim=1).item())
             obs, _, done = env.step(action)
             frames      += 1
 
@@ -146,6 +160,13 @@ def calibrate(
         pickle.dump(stats, f)
 
     print(f"\nCalibration stats saved to: {out_path}")
+
+    if save_frames > 0 and saved_frames:
+        frames_arr = np.stack(saved_frames, axis=0)
+        Path(frames_out).parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(frames_out, frames=frames_arr)
+        print(f"Calibration frames saved to: {frames_out}  (shape={frames_arr.shape}, uint8)")
+
     return stats
 
 
@@ -153,10 +174,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", type=str,
                    default=f"{CHECKPOINT_DIR}/best.pt")
-    p.add_argument("--episodes",   type=int, default=CALIBRATION_EPISODES)
-    p.add_argument("--out",        type=str, default="calibration_stats.pkl")
-    p.add_argument("--max-samples", type=int, default=2_000_000,
+    p.add_argument("--episodes",    type=int,   default=CALIBRATION_EPISODES)
+    p.add_argument("--out",         type=str,   default="calibration_stats.pkl")
+    p.add_argument("--max-samples", type=int,   default=2_000_000,
                    help="Max activation samples kept per layer (0 = unlimited)")
+    p.add_argument("--save-frames", type=int,   default=4000,
+                   help="Number of uint8 frames to save for offline sweep (0 = skip)")
+    p.add_argument("--frames-out",  type=str,   default="calibration_frames.npz")
+    p.add_argument("--eps-random",  type=float, default=0.20,
+                   help="Exploration rate during calibration for state diversity")
     return p.parse_args()
 
 
@@ -167,4 +193,7 @@ if __name__ == "__main__":
         n_episodes=args.episodes,
         out_path=args.out,
         max_samples_per_layer=args.max_samples,
+        save_frames=args.save_frames,
+        frames_out=args.frames_out,
+        eps_random=args.eps_random,
     )

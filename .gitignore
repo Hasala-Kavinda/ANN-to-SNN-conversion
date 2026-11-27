@@ -10,6 +10,7 @@ dist/
 build/
 .eggs/
 checkpoints/
+checkpoints_local/
 videos/
 runs/
 *.pkl
@@ -19,7 +20,6 @@ runs/
 .DS_Store
 *.ipynb_checkpoints
 docs/
-README.md
 .vscode
 research/
 _vizdoom.ini

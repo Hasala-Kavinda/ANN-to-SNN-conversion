@@ -72,6 +72,7 @@ def test_env_full_episode():
     assert steps > 0
 
 
+@pytest.mark.slow
 def test_100_episodes():
     """Checkpoint: 100 random episodes without errors."""
     from envs.doom_env import DoomEnv
