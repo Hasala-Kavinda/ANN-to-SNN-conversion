@@ -54,3 +54,16 @@ LOG_DIR         = "runs"
 SAVE_EVERY      = 10_000         # Save checkpoint every N steps
 EVAL_EVERY      = 25_000         # Run evaluation every N steps during training
 EVAL_EPISODES   = 20             # Episodes per mid-training evaluation
+
+# Opt-in local profile (preserves FRAME_STACK=4 & server checkpoint compatibility)
+import os as _os
+ACTIVE_PROFILE = _os.environ.get("SNN_DOOM_PROFILE", "server")
+if ACTIVE_PROFILE == "local":
+    BATCH_SIZE     = 64
+    REPLAY_SIZE    = 50_000
+    WARMUP_STEPS   = 2_000
+    EPS_DECAY      = 20_000
+    MAX_STEPS      = 60_000
+    EVAL_EVERY     = 10_000
+    EVAL_EPISODES  = 10
+    CHECKPOINT_DIR = "checkpoints_local"

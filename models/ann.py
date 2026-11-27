@@ -28,7 +28,7 @@ import torch.nn as nn
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from configs.config import FRAME_STACK, N_ACTIONS
+from configs.config import FRAME_STACK, IMG_H, IMG_W, N_ACTIONS
 
 
 class DQN(nn.Module):
@@ -83,7 +83,7 @@ class DQN(nn.Module):
 
     def _compute_flat_size(self, in_channels: int) -> int:
         with torch.no_grad():
-            dummy = torch.zeros(1, in_channels, 84, 84)
+            dummy = torch.zeros(1, in_channels, IMG_H, IMG_W)
             return int(self.conv(dummy).flatten(1).shape[1])
 
     def get_action(self, obs: torch.Tensor) -> int:

@@ -1,4 +1,5 @@
 venv/
+venv_win/
 __pycache__/
 *.pyc
 *.pyo
@@ -9,6 +10,7 @@ dist/
 build/
 .eggs/
 checkpoints/
+checkpoints_local/
 videos/
 runs/
 *.pkl
@@ -18,12 +20,12 @@ runs/
 .DS_Store
 *.ipynb_checkpoints
 docs/
-README.md
 .vscode
 research/
 _vizdoom.ini
 _vizdoom/
-results_*.png
 _vizdoom.ini
-_vizdoom
+_vizdoom/
 .pytest_cache/
+# Keep results/ tracked for report charts & summary JSON
+!results/

@@ -73,10 +73,13 @@ class DoomEnv:
         frame_stack: int = FRAME_STACK,
         seed: Optional[int] = None,
         window_visible: bool = WINDOW_VISIBLE,
+        capture_rgb: bool = False,
     ) -> None:
         self.frame_skip  = frame_skip
         self.frame_stack = frame_stack
+        self.capture_rgb = capture_rgb
         self._stack: list[np.ndarray] = []
+        self._last_step_rgb_frames: list[np.ndarray] = []
 
         cfg_path = _VZD_SCENARIOS / f"{scenario}.cfg"
         if not cfg_path.exists():
@@ -88,10 +91,12 @@ class DoomEnv:
         self.game = vzd.DoomGame()
         self.game.load_config(str(cfg_path))
 
-        # Force grayscale — fewer channels, simpler SNN
-        self.game.set_screen_format(vzd.ScreenFormat.GRAY8)
+        # Force grayscale for fast training/eval, or RGB24 when recording video
+        fmt = vzd.ScreenFormat.RGB24 if capture_rgb else vzd.ScreenFormat.GRAY8
+        self.game.set_screen_format(fmt)
         self.game.set_screen_resolution(vzd.ScreenResolution.RES_320X240)
         self.game.set_window_visible(window_visible)
+        self.game.add_available_game_variable(vzd.GameVariable.KILLCOUNT)
 
         if seed is not None:
             self.game.set_seed(seed)
@@ -100,6 +105,7 @@ class DoomEnv:
 
         self._episode_steps  = 0
         self._episode_reward = 0.0
+        self._episode_kills  = 0
 
     # Public API
 
@@ -108,8 +114,13 @@ class DoomEnv:
         self.game.new_episode()
         self._episode_steps  = 0
         self._episode_reward = 0.0
+        self._episode_kills  = 0
+        self._last_step_rgb_frames = []
 
-        frame = self._preprocess(self._get_raw_frame())
+        raw   = self._get_raw_frame()
+        if self.capture_rgb and raw is not None:
+            self._last_step_rgb_frames.append(raw.copy())
+        frame = self._preprocess(raw)
         self._stack = [frame.copy() for _ in range(self.frame_stack)]
         return self._get_obs()
 
@@ -130,12 +141,27 @@ class DoomEnv:
         """
         assert 0 <= action_idx < N_ACTIONS, f"Invalid action index: {action_idx}"
 
-        reward = self.game.make_action(self.ACTIONS[action_idx], self.frame_skip)
-        done   = self.game.is_episode_finished()
+        if not self.capture_rgb:
+            reward = self.game.make_action(self.ACTIONS[action_idx], self.frame_skip)
+            done   = self.game.is_episode_finished()
+            raw    = self._get_raw_frame() if not done else None
+        else:
+            self._last_step_rgb_frames = []
+            reward = 0.0
+            done   = False
+            raw    = None
+            for _ in range(self.frame_skip):
+                reward += self.game.make_action(self.ACTIONS[action_idx], 1)
+                done    = self.game.is_episode_finished()
+                if done:
+                    break
+                raw = self._get_raw_frame()
+                if raw is not None:
+                    self._last_step_rgb_frames.append(raw.copy())
 
-        frame = self._preprocess(
-            self._get_raw_frame() if not done else None
-        )
+        self._episode_kills = int(self.game.get_game_variable(vzd.GameVariable.KILLCOUNT))
+
+        frame = self._preprocess(raw if not done else None)
         self._stack.pop(0)
         self._stack.append(frame)
 
@@ -167,6 +193,14 @@ class DoomEnv:
     def episode_steps(self) -> int:
         return self._episode_steps
 
+    @property
+    def episode_kills(self) -> int:
+        return self._episode_kills
+
+    @property
+    def last_step_rgb_frames(self) -> list[np.ndarray]:
+        return self._last_step_rgb_frames
+
     # ── Internals ────────────────────────────────────────────────────────────
 
     def _get_raw_frame(self) -> Optional[np.ndarray]:
@@ -183,6 +217,8 @@ class DoomEnv:
         """
         if frame is None:
             return np.zeros((IMG_H, IMG_W), dtype=np.float32)
+        if frame.ndim == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = frame[40:, :]   # crop top 40 px
         frame = cv2.resize(frame, (IMG_W, IMG_H), interpolation=cv2.INTER_AREA)
         return frame.astype(np.float32) / 255.0

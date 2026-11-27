@@ -35,8 +35,8 @@ class ReplayBuffer:
         self.obs_shape = obs_shape
         self.device    = device
 
-        self._states      = np.zeros((capacity, *obs_shape), dtype=np.float32)
-        self._next_states = np.zeros((capacity, *obs_shape), dtype=np.float32)
+        self._states      = np.zeros((capacity, *obs_shape), dtype=np.uint8)
+        self._next_states = np.zeros((capacity, *obs_shape), dtype=np.uint8)
         self._actions     = np.zeros((capacity,), dtype=np.int64)
         self._rewards     = np.zeros((capacity,), dtype=np.float32)
         self._dones       = np.zeros((capacity,), dtype=np.float32)
@@ -54,11 +54,11 @@ class ReplayBuffer:
         next_state: np.ndarray,
         done:       bool,
     ) -> None:
-        """Store one transition. Overwrites oldest entry when full."""
-        self._states[self._ptr]      = state
+        """Store one transition (frames quantized losslessly to uint8). Overwrites oldest when full."""
+        self._states[self._ptr]      = np.rint(np.clip(state, 0.0, 1.0) * 255.0).astype(np.uint8)
         self._actions[self._ptr]     = action
         self._rewards[self._ptr]     = reward
-        self._next_states[self._ptr] = next_state
+        self._next_states[self._ptr] = np.rint(np.clip(next_state, 0.0, 1.0) * 255.0).astype(np.uint8)
         self._dones[self._ptr]       = float(done)
 
         self._ptr  = (self._ptr + 1) % self.capacity
@@ -83,14 +83,15 @@ class ReplayBuffer:
         )
         idx = np.random.randint(0, self._size, size=batch_size)
 
-        def _t(arr: np.ndarray) -> torch.Tensor:
-            return torch.as_tensor(arr[idx]).to(self.device)
+        def _t(arr: np.ndarray, scale_u8: bool = False) -> torch.Tensor:
+            t = torch.as_tensor(arr[idx]).to(self.device)
+            return t.float().div_(255.0) if scale_u8 else t
 
         return (
-            _t(self._states),
+            _t(self._states, scale_u8=True),
             _t(self._actions),
             _t(self._rewards).unsqueeze(1),
-            _t(self._next_states),
+            _t(self._next_states, scale_u8=True),
             _t(self._dones).unsqueeze(1),
         )
 

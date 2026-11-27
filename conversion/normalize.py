@@ -1,13 +1,8 @@
 """
 Threshold normalization: compute per-layer IF thresholds from calibration data.
 
-The threshold for layer i is the P-th percentile of all activations
-observed at that layer's ReLU output during calibration gameplay.
-
-Using the high percentile (99.9th by default) instead of the absolute max:
-  - The max is too sensitive to outlier hot pixels in rare frames.
-  - The 99.9th clips only the rarest activations, keeping spike rates in
-    a usable range while preventing most neurons from being silenced.
+Supports both a single global percentile and per-layer percentiles, and
+reports the clip fraction (share of observed activations exceeding threshold).
 
 Usage
 -----
@@ -20,6 +15,7 @@ import argparse
 import pickle
 import sys
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 
@@ -30,44 +26,77 @@ from configs.config import PERCENTILE
 
 
 def compute_thresholds(
-    stats_path: str = "calibration_stats.pkl",
-    percentile: float = PERCENTILE,
-) -> dict[str, float]:
+    stats_path: str | dict[str, np.ndarray] = "calibration_stats.pkl",
+    percentile: float | Sequence[float] = PERCENTILE,
+    verbose:    bool = True,
+    return_clip_fracs: bool = False,
+) -> dict[str, float] | tuple[dict[str, float], dict[str, float]]:
     """
-    Load calibration stats and compute one threshold per layer.
+    Load calibration stats (or accept a preloaded dict) and compute one
+    threshold per layer.
 
-    Returns
-    -------
-    dict[layer_name, threshold_value]
-    Ordered as relu_0, relu_1, relu_2, relu_3 (conv1, conv2, conv3, fc1).
+    Parameters
+    ----------
+    stats_path : str | dict
+        Path to calibration_stats.pkl, or already-loaded stats dict.
+    percentile : float | Sequence[float]
+        Single percentile or one percentile per layer in sorted layer order.
+    verbose : bool
+        Print summary table.
+    return_clip_fracs : bool
+        If True, return (thresholds, clip_fractions).
     """
-    with open(stats_path, "rb") as f:
-        stats: dict[str, np.ndarray] = pickle.load(f)
+    if isinstance(stats_path, dict):
+        stats = stats_path
+    else:
+        with open(stats_path, "rb") as f:
+            stats = pickle.load(f)
+
+    layer_names = sorted(stats.keys())
+    if isinstance(percentile, (list, tuple, np.ndarray)):
+        assert len(percentile) == len(layer_names), (
+            f"Expected {len(layer_names)} percentiles, got {len(percentile)}"
+        )
+        pct_list = [float(p) for p in percentile]
+    else:
+        pct_list = [float(percentile)] * len(layer_names)
 
     thresholds: dict[str, float] = {}
-    print(f"Computing thresholds at {percentile}th percentile:\n")
-    print(f"  {'Layer':<12}  {'Max act':>10}  {'Threshold':>10}  {'Ratio':>8}")
-    print("  " + "-" * 48)
+    clip_fracs: dict[str, float] = {}
 
-    for name in sorted(stats.keys()):
+    if verbose:
+        pct_desc = f"{pct_list[0]}th" if len(set(pct_list)) == 1 else str(pct_list)
+        print(f"Computing thresholds at {pct_desc} percentile:\n")
+        print(f"  {'Layer':<12}  {'Max act':>10}  {'Threshold':>10}  {'Ratio':>8}  {'Clip %':>8}")
+        print("  " + "-" * 58)
+
+    for name, pct in zip(layer_names, pct_list):
         acts  = stats[name]
-        t     = float(np.percentile(acts, percentile))
-        t     = max(t, 1e-6)    # guard against zero thresholds
-        ratio = t / (acts.max() + 1e-9)
+        t     = float(np.percentile(acts, pct))
+        t     = max(t, 1e-6)
+        ratio = t / (float(acts.max()) + 1e-9)
+        clip  = float(np.mean(acts > t))
         thresholds[name] = t
-        print(f"  {name:<12}  {acts.max():>10.4f}  {t:>10.4f}  {ratio:>7.1%}")
+        clip_fracs[name] = clip
+        if verbose:
+            print(f"  {name:<12}  {acts.max():>10.4f}  {t:>10.4f}  {ratio:>7.1%}  {clip*100:>7.3f}%")
 
-    print(f"\nThresholds (ordered): {list(thresholds.values())}")
+    if verbose:
+        print(f"\nThresholds (ordered): {list(thresholds.values())}")
+
+    if return_clip_fracs:
+        return thresholds, clip_fracs
     return thresholds
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--stats",      type=str,   default="calibration_stats.pkl")
-    p.add_argument("--percentile", type=float, default=PERCENTILE)
+    p.add_argument("--percentile", type=float, nargs="+", default=[PERCENTILE])
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    compute_thresholds(args.stats, args.percentile)
+    pct = args.percentile[0] if len(args.percentile) == 1 else args.percentile
+    compute_thresholds(args.stats, pct)
