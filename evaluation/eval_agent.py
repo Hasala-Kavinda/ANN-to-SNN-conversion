@@ -84,19 +84,30 @@ class ANNAgent:
     def __init__(self, checkpoint: str, device: torch.device) -> None:
         from models.ann import DQN
         self.device = device
-        self.net    = DQN().to(device)
         ckpt        = torch.load(checkpoint, map_location=device)
         # Support both raw state_dict and full agent checkpoint
         sd = ckpt.get("online_net", ckpt)
+        in_ch = int(sd["conv.0.weight"].shape[1]) if "conv.0.weight" in sd else FRAME_STACK
+        if in_ch != FRAME_STACK:
+            raise ValueError(
+                f"ANN checkpoint expects in_channels={in_ch}, "
+                f"but configs.config.FRAME_STACK={FRAME_STACK}."
+            )
+        self.net = DQN(in_channels=in_ch).to(device)
         self.net.load_state_dict(sd)
         self.net.eval()
 
     def act(self, obs: np.ndarray, **_) -> int:
+        action, _ = self.act_with_q(obs)
+        return action
+
+    def act_with_q(self, obs: np.ndarray, **_) -> tuple[int, np.ndarray]:
         obs_t = torch.as_tensor(
             obs, dtype=torch.float32, device=self.device
         ).unsqueeze(0)
         with torch.no_grad():
-            return int(self.net(obs_t).argmax(dim=1).item())
+            q = self.net(obs_t).squeeze(0)
+            return int(q.argmax().item()), q.cpu().numpy()
 
 
 class SNNAgent:
@@ -108,16 +119,20 @@ class SNNAgent:
         from models.snn import SNNFromDQN
         self.device = device
         self.T      = T
-        self.net    = torch.load(checkpoint, map_location=device, weights_only=False)
-        self.net.eval()
+        self.net    = SNNFromDQN.load_checkpoint(checkpoint, device=device)
 
     def act(self, obs: np.ndarray, T: int | None = None, **_) -> int:
+        action, _ = self.act_with_q(obs, T=T)
+        return action
+
+    def act_with_q(self, obs: np.ndarray, T: int | None = None, **_) -> tuple[int, np.ndarray]:
         t     = T if T is not None else self.T
         obs_t = torch.as_tensor(
             obs, dtype=torch.float32, device=self.device
         ).unsqueeze(0)
         with torch.no_grad():
-            return int(self.net(obs_t, T=t).argmax(dim=1).item())
+            q = self.net(obs_t, T=t).squeeze(0)
+            return int(q.argmax().item()), q.cpu().numpy()
 
 
 # ── Core evaluation loop ──────────────────────────────────────────────────────
@@ -140,7 +155,7 @@ def run_evaluation(
       kill_rate    (fraction of episodes where reward > 0)
     """
     env = DoomEnv(seed=seed)
-    rewards, steps_list = [], []
+    rewards, steps_list, kills_list = [], [], []
 
     for ep in range(n_episodes):
         obs  = env.reset()
@@ -154,25 +169,29 @@ def run_evaluation(
 
         rewards.append(ep_r)
         steps_list.append(env.episode_steps)
+        kills_list.append(env.episode_kills > 0)
 
         if verbose and (ep + 1) % 10 == 0:
             print(f"  Episode {ep+1:3d}/{n_episodes}  "
-                  f"reward={ep_r:7.1f}  steps={env.episode_steps}")
+                  f"reward={ep_r:7.1f}  steps={env.episode_steps}  "
+                  f"kills={env.episode_kills}")
 
     env.close()
 
-    rewards    = np.array(rewards)
-    steps_arr  = np.array(steps_list)
-    kill_rate  = float(np.mean(rewards > 0))
+    rewards_arr = np.array(rewards)
+    steps_arr   = np.array(steps_list)
+    kill_rate   = float(np.mean(kills_list))
+    pos_rate    = float(np.mean(rewards_arr > 0))
 
     stats = {
-        "mean_reward": float(np.mean(rewards)),
-        "std_reward":  float(np.std(rewards)),
-        "min_reward":  float(np.min(rewards)),
-        "max_reward":  float(np.max(rewards)),
-        "mean_steps":  float(np.mean(steps_arr)),
-        "std_steps":   float(np.std(steps_arr)),
-        "kill_rate":   kill_rate,
+        "mean_reward":          float(np.mean(rewards_arr)),
+        "std_reward":           float(np.std(rewards_arr)),
+        "min_reward":           float(np.min(rewards_arr)),
+        "max_reward":           float(np.max(rewards_arr)),
+        "mean_steps":           float(np.mean(steps_arr)),
+        "std_steps":            float(np.std(steps_arr)),
+        "kill_rate":            kill_rate,
+        "positive_reward_rate": pos_rate,
     }
 
     if verbose:
@@ -186,7 +205,8 @@ def _print_stats(stats: dict) -> None:
     print(f"  Mean reward : {stats['mean_reward']:8.2f} ± {stats['std_reward']:.2f}")
     print(f"  Min / Max   : {stats['min_reward']:.1f} / {stats['max_reward']:.1f}")
     print(f"  Mean steps  : {stats['mean_steps']:.1f} ± {stats['std_steps']:.1f}")
-    print(f"  Kill rate   : {stats['kill_rate']*100:.1f}%")
+    print(f"  Kill rate   : {stats['kill_rate']*100:.1f}%  "
+          f"(reward > 0: {stats['positive_reward_rate']*100:.1f}%)")
     print("────────────────────────────────────────────────────────")
 
 

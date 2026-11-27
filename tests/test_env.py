@@ -83,3 +83,23 @@ def test_100_episodes():
         while not done:
             _, _, done = env.step(random.randint(0, env.n_actions - 1))
     env.close()
+
+
+def test_env_capture_rgb_and_kills():
+    """RGB capture mode yields (240, 320, 3) frames and tracks episode_kills."""
+    from envs.doom_env import DoomEnv
+    from configs.config import FRAME_STACK, IMG_H, IMG_W
+
+    env = DoomEnv(seed=0, capture_rgb=True)
+    obs = env.reset()
+    assert obs.shape == (FRAME_STACK, IMG_H, IMG_W)
+    assert len(env.last_step_rgb_frames) == 1
+    assert env.last_step_rgb_frames[0].shape == (240, 320, 3)
+
+    obs, _, done = env.step(0)
+    assert obs.shape == (FRAME_STACK, IMG_H, IMG_W)
+    if not done:
+        assert len(env.last_step_rgb_frames) == env.frame_skip
+        assert env.last_step_rgb_frames[0].shape == (240, 320, 3)
+    assert isinstance(env.episode_kills, int)
+    env.close()

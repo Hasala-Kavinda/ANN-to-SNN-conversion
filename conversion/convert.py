@@ -88,8 +88,9 @@ def scale_layer(
 
 
 def build_snn_from_ann(
-    ann:        DQN,
-    thresholds: list[float],
+    ann:            DQN,
+    thresholds:     list[float],
+    mem_init_ratio: float = 0.0,
 ) -> SNNFromDQN:
     """
     Extract layers from the ANN, scale their weights, and wrap in SNNFromDQN.
@@ -100,6 +101,8 @@ def build_snn_from_ann(
         Trained ANN (on CPU is fine for conversion).
     thresholds : list[float]
         [λ_conv1, λ_conv2, λ_conv3, λ_fc1]  — in layer order.
+    mem_init_ratio : float
+        Initial membrane potential as a fraction of threshold (0.0 or 0.5).
 
     Returns
     -------
@@ -146,6 +149,7 @@ def build_snn_from_ann(
         conv_layers=scaled_convs,
         fc_layers=[scaled_fc_hidden, scaled_fc_out],
         thresholds=[1.0] * len(thresholds),
+        mem_init_ratio=mem_init_ratio,
     )
     return snn
 
@@ -176,8 +180,10 @@ def verify_action_agreement(
     from envs.doom_env import DoomEnv
     env = DoomEnv()
 
-    agree = 0
-    total = 0
+    agree   = 0
+    total   = 0
+    q_gaps  = []
+    q_maes  = []
 
     for _ in range(n_episodes):
         obs  = env.reset()
@@ -187,8 +193,15 @@ def verify_action_agreement(
                 obs, dtype=torch.float32, device=device
             ).unsqueeze(0)
             with torch.no_grad():
-                ann_action = int(ann(obs_t).argmax(dim=1).item())
-                snn_action = int(snn(obs_t, T=T).argmax(dim=1).item())
+                q_ann = ann(obs_t)
+                q_snn = snn(obs_t, T=T)
+                ann_action = int(q_ann.argmax(dim=1).item())
+                snn_action = int(q_snn.argmax(dim=1).item())
+
+                sorted_q, _ = torch.sort(q_ann.squeeze(0), descending=True)
+                q_gaps.append(float((sorted_q[0] - sorted_q[1]).item()))
+                q_maes.append(float((q_ann - q_snn).abs().mean().item()))
+
             agree += int(ann_action == snn_action)
             total += 1
             obs, _, done = env.step(ann_action)   # follow ANN policy
@@ -198,9 +211,12 @@ def verify_action_agreement(
     status    = "✓" if agreement >= min_agreement else "✗"
     print(f"\nAction agreement @ T={T}: {agreement*100:.1f}%  "
           f"({agree}/{total} frames)  {status}")
+    if q_gaps:
+        print(f"  ANN Q-gap (mean / median) : {np.mean(q_gaps):.4f} / {np.median(q_gaps):.4f}")
+        print(f"  SNN Q-MAE vs ANN (mean)   : {np.mean(q_maes):.4f}")
     if agreement < min_agreement:
         print(f"  [!] Below target {min_agreement*100:.0f}%. "
-              f"Try lowering --percentile or increasing T.")
+              f"Try lowering --percentile, using --mem-init 0.5, or increasing T.")
     return agreement
 
 
@@ -217,6 +233,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-calibrate",  action="store_true",
                    help="Skip calibration (use existing stats file)")
     p.add_argument("--percentile",    type=float, default=PERCENTILE)
+    p.add_argument("--mem-init",      type=float, default=0.0,
+                   help="Initial membrane ratio (e.g. 0.5 for half-threshold init)")
     p.add_argument("--verify",        action="store_true", default=True)
     p.add_argument("--no-verify",     action="store_false", dest="verify")
     p.add_argument("--verify-T",      type=int, default=64)
@@ -256,15 +274,22 @@ def main() -> None:
     print("\n" + "═" * 60)
     print("Step 3: Converting ANN → SNN …")
     print("═" * 60)
-    ann  = DQN()
     ckpt = torch.load(args.checkpoint, map_location="cpu")
-    ann.load_state_dict(ckpt.get("online_net", ckpt))
+    sd   = ckpt.get("online_net", ckpt)
+    in_ch = int(sd["conv.0.weight"].shape[1]) if "conv.0.weight" in sd else FRAME_STACK
+    if in_ch != FRAME_STACK:
+        raise ValueError(
+            f"Checkpoint expects in_channels={in_ch}, "
+            f"but configs.config.FRAME_STACK={FRAME_STACK}."
+        )
+    ann  = DQN(in_channels=in_ch)
+    ann.load_state_dict(sd)
     ann.eval()
 
-    snn = build_snn_from_ann(ann, thresholds)
+    snn = build_snn_from_ann(ann, thresholds, mem_init_ratio=args.mem_init)
     print("SNN built successfully.")
     total_params = sum(p.numel() for p in snn.parameters())
-    print(f"SNN parameters: {total_params:,}")
+    print(f"SNN parameters: {total_params:,}  |  mem_init_ratio={args.mem_init}")
 
     # ── Step 4: Verify ────────────────────────────────────────────────────────
     if args.verify:
@@ -283,8 +308,15 @@ def main() -> None:
     print("\n" + "═" * 60)
     print("Step 5: Saving SNN …")
     print("═" * 60)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(snn, args.out)
+    snn.save_checkpoint(
+        args.out,
+        metadata={
+            "source_checkpoint": args.checkpoint,
+            "percentile":        args.percentile,
+            "raw_thresholds":    thresholds,
+            "mem_init_ratio":    args.mem_init,
+        },
+    )
     print(f"SNN saved to: {args.out}")
     print("\nConversion complete ✓")
 

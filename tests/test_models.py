@@ -133,3 +133,59 @@ def test_snn_conversion_fidelity_and_spike_stats():
             continue
         assert 0.0 <= s["firing_rate"] <= 1.0, f"{name} bad rate: {s['firing_rate']}"
         assert 0.0 <= s["sparsity"] <= 1.0, f"{name} bad sparsity: {s['sparsity']}"
+        assert 0.0 <= s["silent_neuron_frac"] <= 1.0
+
+
+def test_snn_forward_with_stats_and_mem_init(tmp_path):
+    """forward_with_stats matches forward(), mem_init_ratio=0.5 works, and checkpoint round-trips."""
+    from models.ann import DQN
+    from models.snn import SNNFromDQN
+    from conversion.convert import build_snn_from_ann
+    from analysis.spike_stats import compute_ann_macs_and_snn_sops
+    from configs.config import FRAME_STACK
+
+    torch.manual_seed(1)
+    ann = DQN().eval()
+    x = torch.rand(1, FRAME_STACK, 84, 84)
+    thresholds = [1.0, 1.0, 1.0, 1.0]
+
+    snn = build_snn_from_ann(ann, thresholds, mem_init_ratio=0.5).eval()
+    with torch.no_grad():
+        q_std = snn(x, T=16)
+        q_stat, stats = snn.forward_with_stats(x, T=16)
+    assert torch.allclose(q_std, q_stat, atol=1e-6)
+
+    # Portable checkpoint round-trip
+    ckpt_path = tmp_path / "snn_portable.pt"
+    snn.save_checkpoint(ckpt_path, metadata={"percentile": 99.9})
+    snn_loaded = SNNFromDQN.load_checkpoint(ckpt_path, device="cpu")
+    with torch.no_grad():
+        assert torch.allclose(snn_loaded(x, T=16), q_std, atol=1e-6)
+    assert snn_loaded.mem_init_ratio == 0.5
+
+    # SOPs vs MACs calculation
+    layer_spikes = {k: v["total_spikes"] for k, v in stats.items() if not k.startswith("_")}
+    ops = compute_ann_macs_and_snn_sops(snn, layer_spikes)
+    assert ops["ann_macs_total"] > ops["ann_macs_spiking_layers"] > 0
+    assert ops["conv0_analog_macs"] > 0
+    assert ops["snn_sops_spiking_layers"] >= 0
+
+
+def test_plot_helpers_generate_all_three_pngs(tmp_path):
+    """All 3 report chart helpers write non-empty PNG files."""
+    from analysis.plot_results import (
+        plot_action_agreement_vs_T,
+        plot_reward_vs_T,
+        plot_spike_rates,
+    )
+
+    p1 = tmp_path / "reward.png"
+    p2 = tmp_path / "agreement.png"
+    p3 = tmp_path / "spikes.png"
+
+    plot_reward_vs_T(90.0, -300.0, [8, 16, 32], [-50.0, 40.0, 85.0], [20.0, 15.0, 5.0], str(p1), scripted_reward=75.0)
+    plot_action_agreement_vs_T([8, 16, 32], [0.5, 0.8, 0.95], str(p2))
+    plot_spike_rates(["conv_0", "conv_1", "conv_2", "fc_0"], [0.12, 0.08, 0.05, 0.03], str(p3), T=32, total_spikes=4200)
+
+    for p in (p1, p2, p3):
+        assert p.exists() and p.stat().st_size > 1000

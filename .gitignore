@@ -23,7 +23,8 @@ README.md
 research/
 _vizdoom.ini
 _vizdoom/
-results_*.png
 _vizdoom.ini
-_vizdoom
+_vizdoom/
 .pytest_cache/
+# Keep results/ tracked for report charts & summary JSON
+!results/
